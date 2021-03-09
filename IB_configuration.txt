@@ -1,0 +1,175 @@
+no verbs
+--------
+CUDA_VISIBLE_DEVICES=''  TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "ps", "index": 0}}' python script/train_dis.py --mode=train  --model=DIEN --batch_size=1024
+
+
+CUDA_VISIBLE_DEVICES='0' TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}}' python script/train_dis.py --mode=train  --model=DIEN --batch_size=1024
+
+
+wget http://content.mellanox.com/ofed/MLNX_OFED-4.7-1.0.0.1/MLNX_OFED_LINUX-4.7-1.0.0.1-ubuntu18.04-x86_64.iso
+
+wget http://content.mellanox.com/ofed/MLNX_OFED-4.6-1.0.1.1/MLNX_OFED_LINUX-4.6-1.0.1.1-ubuntu18.04-x86_64.iso
+
+mkdir mnt
+mount MLNX_OFED_LINUX-4.7-1.0.0.1-ubuntu18.04-x86_64.iso mnt/
+ 
+cd mnt/
+ 
+apt-get install lsb-core
+ 
+./mlnxofedinstall  --user-space-only
+ 
+ofed_info -s
+ 
+mlnx_perf -i ib0
+ 
+ib_write_bw --run_infinitely localhost &
+
+
+/opt/tensorflow/nvbuildopts
+-c opt --config=cuda --config=verbs --cxxopt=-D_GLIBCXX_USE_CXX11_ABI=0 --output_filter MATCH_NOTHING
+
+
+python benchmarks/scripts/tf_cnn_benchmarks/tf_cnn_benchmarks.py --ps_hosts=10.149.160.45:5000 --worker_hosts=10.149.160.2:5001  --job_name=ps  --task_index=0  --server_protocol=grpc+verbs  --variable_update=parameter_server  --local_parameter_device=cpu  --model=resnet50  --num_gpus=1  --use_fp16 --batch_size=256
+
+python benchmarks/scripts/tf_cnn_benchmarks/tf_cnn_benchmarks.py --ps_hosts=10.149.160.45:5000 --worker_hosts=10.149.160.2:5001  --job_name=worker  --task_index=0  --server_protocol=grpc+verbs  --variable_update=parameter_server  --local_parameter_device=cpu  --model=resnet50  --num_gpus=1  --use_fp16 --batch_size=256
+
+
+--------------------------
+ps node2
+CUDA_VISIBLE_DEVICES='' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "ps", "index": 0}, "rpc_layer": "grpc+verbs"}' python script/train_dis.py --mode=train  --model=DIEN --batch_size=1024
+
+worker node1
+CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}' python script/train_dis.py --mode=train  --model=DIEN --batch_size=1024
+
+
+CUDA_VISIBLE_DEVICES='' RDMA_DEVICE=mlx5_1 TF_CONFIG='{"cluster": {"worker": ["11.11.11.1:1112"],"ps": ["11.11.11.2:1111"]},"task": {"type": "ps", "index": 0}, "rpc_layer": "grpc+verbs"}' python script/train_dis_ydx.py --mode=train  --model=DIEN --batch_size=1 2>&1 | tee out.log
+
+
+
+code:
+/opt/tensorflow/tensorflow-source/tensorflow# vim core/common_runtime/process_state.cc
+/opt/tensorflow/tensorflow-source/tensorflow# vim stream_executor/cuda/cuda_driver.cc
+/tensorflow_core/python/distribute/distribute_coordinator.py(766)run_distribute_coordinator()
+/opt/tensorflow/tensorflow-source/tensorflow# vim python/distribute/parameter_server_strategy.py:
+/usr/local/lib/python3.6/dist-packages/tensorflow_core/python/distribute/parameter_server_strategy.py
+
+roundrobin
+/usr/local/lib/python3.6/dist-packages/tensorflow_core/python/training/device_setter.py(225)replica_device_setter()
+
+/usr/local/lib/python3.6/dist-packages/tensorflow_estimator/python/estimator/estimator.py
+
+
+
+/usr/local/lib/python3.6/dist-packages/tensorflow_core/python/distribute/parameter_server_strategy.py
+268     if compute_devices is None:
+269       if not cluster_resolver:
+270           import os
+271           import json
+272           tf_config = json.loads(os.environ.get("TF_CONFIG", "{}"))
+273           import pdb
+274           pdb.set_trace()
+275           task_env = tf_config.get("task", {})
+276           task_type = task_env.get("type", 'ps')
+277           if task_type == 'ps':
+278               num_gpus = 0
+279           else:
+280               num_gpus = context.num_gpus()
+
+
+
+
+    tf_config = json.loads(os.environ.get("TF_CONFIG", "{}"))
+    ps_nodes = tf_config.get("cluster", {})['ps']
+    worker_nodes = tf_config.get("cluster", {})['worker']
+    task_env = tf_config.get("task", {})
+    task_type = task_env.get("type", {})
+    task_index = task_env.get("index", {})
+    rpc_layer = tf_config.get("rpc_layer", {})
+    if task_type == 'ps':
+        gpu_count = 0
+    else:
+        gpu_count = len(worker_nodes)
+    num_accelerators = {"GPU": gpu_count}
+
+    import pdb
+    pdb.set_trace()
+    cluster_spec = tf.train.ClusterSpec({
+        "ps": ps_nodes,
+        "worker": worker_nodes,
+        })
+    simple_resolver = tf.distribute.cluster_resolver.SimpleClusterResolver(cluster_spec, task_type=task_type,
+                                                                           task_id=task_index,
+                                                                           num_accelerators=num_accelerators,
+                                                                           rpc_layer=rpc_layer)
+
+    # DistributedStrategy
+    strategy = tf.distribute.experimental.ParameterServerStrategy(cluster_resolver=simple_resolver)
+
+/usr/local/lib/python3.6/dist-packages/tensorflow_core/python/training/session_manager.py
+_restore_checkpoint
+(Pdb) p master
+'grpc://localhost:1112'
+remove 'verbs'
+
+
+ docker run --gpus all -it --net=host --name tf_20.09_verbs --uts=host --ipc=host --ulimit stack=67108864  --ulimit memlock=-1 --security-opt seccomp=unconfined --privileged -u 0:0  --device=/dev/infiniband/rdma_cm --device=/dev/infiniband/ucm0 --device=/dev/infiniband/uverbs0  --device=/dev/infiniband/issm0 --device=/dev/infiniband/umad0 -p6006:6006 nvcr.io/nvidia/tensorflow:20.09-tf1-py3
+ 
+ 
+export TF_CPP_VMODULE=xla_compilation_cache=1
+export TF_CPP_VMODULE=${TF_CPP_VMODULE},nvptx_compiler=2,gpu_compiler=1,gpu_backend_lib=1
+# CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}' TF_XLA_FLAGS=--tf_xla_auto_jit=1 python script/train_dis.py --mode=train  --model=DIEN --batch_size=10
+
+
+
+export TF_CPP_VMODULE=xla_compilation_cache=1
+# TF_XLA_FLAGS=--tf_xla_auto_jit=1,--tf_xla_async_compilation=true
+TF_CPP_VMODULE="nvptx_compiler=2,gpu_compiler=1,gpu_backend_lib=1"
+export TF_CPP_VMODULE=${TF_CPP_VMODULE},nvptx_compiler=2,gpu_compiler=1,gpu_backend_lib=1
+export TF_CPP_VMODULE=${TF_CPP_VMODULE},"partially_decluster_pass=4,mark_for_compilation_pass=2,xla_compilation_cache=1,flags=2" #compilability_check_util=3"
+
+https://developer.nvidia.com/blog/nvidia-automatic-mixed-precision-tensorflow/
+export TF_ENABLE_AUTO_MIXED_PRECISION=1
+
+
+export TF_CPP_VMODULE="nvptx_compiler=2,gpu_compiler=1,gpu_backend_lib=1" 
+
+
+dlprof --reports=detail
+
+# CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}' dlprof --reports=summary,detail,iteration,kernel,tensor --output_path=/profile_res/  python script/train_dis.py --mode=train  --model=DIEN --batch_size=10
+
+#dlprof+xla
+root@node1:/workspace/ctr-tf-new/DIEN# CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}' TF_XLA_FLAGS=--tf_xla_auto_jit=1,--tf_xla_async_compilation=true dlprof --reports=all --iter_start 25 --iter_stop 35 --key_node=_send_global_step --mode=tensorflow1 --output_path=/profile_res/  python script/train_dis.py --mode=train  --model=DIEN --batch_size=128
+
+
+root@node1:/workspace/ctr-tf-new/DIEN# CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}'  dlprof --reports=all --iter_start 25 --iter_stop 35  --mode=tensorflow1 --output_path=/profile_res/  python script/train_dis.py --mode=train  --model=DIEN --batch_size=512
+
+
+
+
+
+
+
+
+distribute/distribute_coordinator.py
+ def _get_master_target(self):
+     prefix = ""
+    if self._rpc_layer:
+      self._rpc_layer = 'grpc'
+      prefix = self._rpc_layer + "://"
+
+
+
+# CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}'  dlprof --reports=all --iter_start 25 --iter_stop 35  --mode=tensorflow1 --output_path=/profile_res/  python script/train_dis.py --mode=train  --model=DIEN --batch_size=10
+
+
+
+
+CUDA_VISIBLE_DEVICES='' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112","10.10.10.2:1113"],"ps": ["10.10.10.2:1111"]},"task": {"type": "ps", "index": 0}, "rpc_layer": "grpc+verbs"}' python script/train_dis.py --mode=train  --model=DIEN --batch_size=10
+
+CUDA_VISIBLE_DEVICES='1' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112","10.10.10.2:1113"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 0}, "rpc_layer": "grpc+verbs"}'    python script/train_dis.py --mode=train  --model=DIEN --batch_size=128
+
+CUDA_VISIBLE_DEVICES='0' RDMA_DEVICE=mlx5_0 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112","10.10.10.2:1113"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 1}, "rpc_layer": "grpc+verbs"}'    python script/train_dis.py --mode=train  --model=DIEN --batch_size=128
+
+CUDA_VISIBLE_DEVICES='2' RDMA_DEVICE=mlx5_1 TF_CONFIG='{"cluster": {"worker": ["10.10.10.1:1112","10.10.10.2:1113"],"ps": ["10.10.10.2:1111"]},"task": {"type": "worker", "index": 1}, "rpc_layer": "grpc+verbs"}'    python script/train_dis.py --mode=train  --model=DIEN --batch_size=128
